@@ -49,11 +49,13 @@ export const config = {
       listenIps: [
         {
           ip: '127.0.0.1',
-          announcedIp: null,
+          // Remove announcedIp entirely or set it to undefined
+          // announcedIp: undefined, // This is optional since undefined is the default
         },
       ],
-      maxIncomingBitrate: 1500000,
-      initialAvailableOutgoingBitrate: 1000000,
+      enableUdp: true,
+      enableTcp: true,
+      // Removed invalid properties: maxIncomingBitrate, initialAvailableOutgoingBitrate
     },
   },
   

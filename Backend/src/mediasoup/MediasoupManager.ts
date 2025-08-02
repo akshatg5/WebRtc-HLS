@@ -1,68 +1,9 @@
-import * as mediasoup from "mediasoup";
-import { config } from "../config";
-
-export class MediasoupManager {
-  private worker?: mediasoup.types.Worker;
-  private router?: mediasoup.types.Router;
-  private rooms: Map<string, Room> = new Map();
-
-  async initialize() {
-    // create a mediasoup worker
-    this.worker = await mediasoup.createWorker(config.mediasoup.worker);
-
-    this.worker.on("died", () => {
-      console.error("Mediasoup worker has died,restarting...");
-      process.exit(1);
-    });
-
-    // create router
-    this.router = await this.worker.createRouter({
-      mediaCodecs: config.mediasoup.router.mediaCodecs,
-    });
-
-    console.log("Mediasoup worker and router created");
-  }
-
-  async createRoom(roomId: string): Promise<Room> {
-    if (this.rooms.has(roomId)) {
-      return this.rooms.get(roomId);
-    }
-
-    if (!this.router) {
-      throw new Error("Router is not initialized");
-    }
-
-    const room = new Room(roomId, this.router);
-    this.rooms.set(roomId, room);
-
-    console.log(`Room ${roomId} created`);
-    return room;
-  }
-
-  getRoom(roomId: string): Room | undefined {
-    return this.rooms.get(roomId);
-  }
-
-  removeRoom(roomId: string) {
-    const room = this.rooms.get(roomId);
-    if (room) {
-      room.close();
-      this.rooms.delete(roomId);
-      console.log(`Room ${roomId} removed.`);
-    }
-  }
-
-  getRtpCapabilities() {
-    if (!this.router) {
-      throw new Error("Router is not initialzied");
-    }
-    return this.router.rtpCapabilities;
-  }
-}
+import * as mediasoup from 'mediasoup';
+import { config } from '../config';
 
 export class Room {
   private peers: Map<string, Peer> = new Map();
-  private broadcasters: Map<string, Peer> = new Map(); // for HLS viewers this is used;
+  private broadcasters: Map<string, Peer> = new Map(); // For HLS viewers
 
   constructor(
     public readonly id: string,
@@ -71,18 +12,14 @@ export class Room {
 
   addPeer(peerId: string, isViewer: boolean = false): Peer {
     const peer = new Peer(peerId, this.router);
-
+    
     if (isViewer) {
       this.broadcasters.set(peerId, peer);
     } else {
       this.peers.set(peerId, peer);
     }
-
-    console.log(
-      `Peer ${peerId} added to room ${this.id} as ${
-        isViewer ? "viewer" : "streamer"
-      }`
-    );
+    
+    console.log(`Peer ${peerId} added to room ${this.id} as ${isViewer ? 'viewer' : 'streamer'}`);
     return peer;
   }
 
@@ -101,7 +38,7 @@ export class Room {
   }
 
   getStreamers(): Peer[] {
-    return Array.from(this.broadcasters.values());
+    return Array.from(this.peers.values());
   }
 
   getViewers(): Peer[] {
@@ -109,15 +46,13 @@ export class Room {
   }
 
   close() {
-    // close all the peers
+    // Close all peers
     for (const peer of this.peers.values()) {
       peer.close();
     }
-
     for (const peer of this.broadcasters.values()) {
       peer.close();
     }
-
     this.peers.clear();
     this.broadcasters.clear();
   }
@@ -133,14 +68,17 @@ export class Peer {
     private router: mediasoup.types.Router
   ) {}
 
-  async createWebRtcTransport(direction: "send" | "rev") {
-    const transport = await this.router.createWebRtcTransport(
-      config.mediasoup.webRtcTransport
-    );
-
+  async createWebRtcTransport(direction: 'send' | 'recv') {
+    const transport = await this.router.createWebRtcTransport({
+      listenIps: config.mediasoup.webRtcTransport.listenIps,
+      enableUdp: config.mediasoup.webRtcTransport.enableUdp,
+      enableTcp: config.mediasoup.webRtcTransport.enableTcp,
+    });
+    
     this.transports.set(direction, transport);
-    transport.on("dtlsstatechange", (dtlsState) => {
-      if (dtlsState === "closed") {
+    
+    transport.on('dtlsstatechange', (dtlsState) => {
+      if (dtlsState === 'closed') {
         transport.close();
       }
     });
@@ -154,36 +92,28 @@ export class Peer {
   }
 
   async connectTransport(transportId: string, dtlsParameters: any) {
-    const transport = Array.from(this.transports.values()).find(
-      (t) => t.id === transportId
-    );
+    const transport = Array.from(this.transports.values()).find(t => t.id === transportId);
     if (!transport) {
-      throw new Error("Transport not found");
+      throw new Error('Transport not found');
     }
 
     await transport.connect({ dtlsParameters });
   }
 
-  async produce(
-    transportId: string,
-    kind: mediasoup.types.MediaKind,
-    rtpParameters: any
-  ) {
-    const transport = Array.from(this.transports.values()).find(
-      (t) => t.id === transportId
-    );
+  async produce(transportId: string, kind: mediasoup.types.MediaKind, rtpParameters: any): Promise<string> {
+    const transport = Array.from(this.transports.values()).find(t => t.id === transportId);
     if (!transport) {
-      throw new Error("Transport not found");
+      throw new Error('Transport not found');
     }
 
-    const producer = await (transport as mediasoup.types.WebRtcServer).produce({
+    const producer = await (transport as mediasoup.types.WebRtcTransport).produce({
       kind,
       rtpParameters,
     });
 
     this.producers.set(producer.id, producer);
-
-    producer.on("transportclose", () => {
+    
+    producer.on('transportclose', () => {
       producer.close();
       this.producers.delete(producer.id);
     });
@@ -191,21 +121,22 @@ export class Peer {
     return producer.id;
   }
 
-  async consume(transportId: string, producerId: string, rtpCapabilities: any) {
-    const transport = Array.from(this.transports.values()).find(
-      (t) => t.id === transportId
-    );
+  async consume(transportId: string, producerId: string, rtpCapabilities: any): Promise<{
+    id: string;
+    kind: mediasoup.types.MediaKind;
+    rtpParameters: any;
+    producerId: string;
+  }> {
+    const transport = Array.from(this.transports.values()).find(t => t.id === transportId);
     if (!transport) {
-      throw new Error("Transport not found");
+      throw new Error('Transport not found');
     }
 
     if (!this.router.canConsume({ producerId, rtpCapabilities })) {
-      throw new Error("Cannot consume");
+      throw new Error('Cannot consume');
     }
 
-    const consumer = await (
-      transport as mediasoup.types.WebRtcTransport
-    ).consume({
+    const consumer = await (transport as mediasoup.types.WebRtcTransport).consume({
       producerId,
       rtpCapabilities,
       paused: true,
@@ -213,7 +144,7 @@ export class Peer {
 
     this.consumers.set(consumer.id, consumer);
 
-    consumer.on("transportclose", () => {
+    consumer.on('transportclose', () => {
       consumer.close();
       this.consumers.delete(consumer.id);
     });
@@ -221,7 +152,7 @@ export class Peer {
     return {
       id: consumer.id,
       kind: consumer.kind,
-      rtpParameters: this.consume.rtpParameters,
+      rtpParameters: consumer.rtpParameters,
       producerId: producerId,
     };
   }
@@ -229,7 +160,7 @@ export class Peer {
   async resumeConsumer(consumerId: string) {
     const consumer = this.consumers.get(consumerId);
     if (!consumer) {
-      throw new Error("Consumer not found");
+      throw new Error('Consumer not found');
     }
     await consumer.resume();
   }
@@ -246,5 +177,69 @@ export class Peer {
     this.transports.clear();
     this.producers.clear();
     this.consumers.clear();
+  }
+}
+
+export class MediasoupManager {
+  private worker?: mediasoup.types.Worker;
+  private router?: mediasoup.types.Router;
+  private rooms: Map<string, Room> = new Map();
+
+  async initialize() {
+    // Create mediasoup worker
+    this.worker = await mediasoup.createWorker(config.mediasoup.worker);
+    
+    this.worker.on('died', () => {
+      console.error('Mediasoup worker died, restarting...');
+      process.exit(1);
+    });
+
+    // Create router
+    this.router = await this.worker.createRouter({
+      mediaCodecs: config.mediasoup.router.mediaCodecs,
+    });
+
+    console.log('Mediasoup worker and router created');
+  }
+
+  async createRoom(roomId: string): Promise<Room> {
+    const existingRoom = this.rooms.get(roomId);
+    if (existingRoom) {
+      return existingRoom;
+    }
+
+    if (!this.router) {
+      throw new Error('Router not initialized');
+    }
+
+    const room = new Room(roomId, this.router);
+    this.rooms.set(roomId, room);
+    
+    console.log(`Room ${roomId} created`);
+    return room;
+  }
+
+  getRoom(roomId: string): Room | undefined {
+    return this.rooms.get(roomId);
+  }
+
+  removeRoom(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (room) {
+      room.close();
+      this.rooms.delete(roomId);
+      console.log(`Room ${roomId} removed`);
+    }
+  }
+
+  getRtpCapabilities() {
+    if (!this.router) {
+      throw new Error('Router not initialized');
+    }
+    return this.router.rtpCapabilities;
+  }
+
+  getRouter(): mediasoup.types.Router | undefined {
+    return this.router;
   }
 }
