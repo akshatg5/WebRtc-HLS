@@ -1,103 +1,224 @@
 import express from "express";
 import { createServer } from "http";
+import { Server as SocketIOServer } from "socket.io";
 import cors from "cors";
-import { Server } from "socket.io";
-import { MediasoupManager } from "./mediasoup/MediasoupManager";
-import { SignalingServer } from "./webrtc/SignalingServer";
-import { hlsRouter } from "./routes/hlsroutes";
-import { HLSManager } from "./hls/HLSmanager";
+import { MediasoupManager } from "./MediasoupManager";
 
 const app = express();
 const server = createServer(app);
-
-// CORS Config
-app.use(
-  cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    credentials: true
-  })
-);
-
-app.use(express.json());
-
-// setting up socket.io
-const io = new Server(server, {
+const io = new SocketIOServer(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    credentials: true
+    origin: "*",
+    methods: ["GET", "POST"],
   },
 });
 
-// Initialize Mediasoup and Signalling
-const mediasoupManager = new MediasoupManager();  
-const signalingServer = new SignalingServer(io, mediasoupManager); 
+app.use(cors());
+app.use(express.json());
 
-// Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "Working" });
-});
+// Initialize MediaSoup Manager
+const mediasoupManager = new MediasoupManager();
 
-// API Routes for room management
-app.get("/api/rooms/:roomId/info", async (req, res) => {
-  try {
-    const { roomId } = req.params;
-    const room = mediasoupManager.getRoom(roomId);
-    
-    if (!room) {
-      return res.status(404).json({ error: "Room not found" });
+// Room management
+interface Room {
+  id: string;
+  peers: Set<string>;
+}
+
+const rooms = new Map<string, Room>();
+const peers = new Map<string, { roomId: string; socket: any }>();
+
+// Socket.IO connection handling
+io.on("connection", (socket) => {
+  console.log("User connected:", socket.id);
+
+  socket.on("join-room", async ({ roomId }) => {
+    try {
+      socket.join(roomId);
+
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, { id: roomId, peers: new Set() });
+      }
+
+      const room = rooms.get(roomId)!;
+      room.peers.add(socket.id);
+
+      peers.set(socket.id, { roomId, socket });
+
+      // Notify existing peers about new peer
+      socket.to(roomId).emit("peer-joined", { peerId: socket.id });
+
+      // Send existing peers to new peer
+      const existingPeers = Array.from(room.peers).filter(
+        (id) => id !== socket.id
+      );
+      socket.emit("existing-peers", { peers: existingPeers });
+
+      console.log(`Peer ${socket.id} joined room ${roomId}`);
+    } catch (error) {
+      console.error("Error joining room:", error);
+      socket.emit("error", { message: "Failed to join room" });
+    }
+  });
+
+  socket.on("get-rtp-capabilities", async (callback) => {
+    try {
+      const rtpCapabilities = await mediasoupManager.getRtpCapabilities();
+      callback({ rtpCapabilities });
+    } catch (error) {
+      console.error("Error getting RTP capabilities:", error);
+      callback({ error: "Failed to get RTP capabilities" });
+    }
+  });
+
+  socket.on("create-transport", async ({ direction }, callback) => {
+    try {
+      const transport = await mediasoupManager.createWebRtcTransport();
+
+      callback({
+        params: {
+          id: transport.id,
+          iceParameters: transport.iceParameters,
+          iceCandidates: transport.iceCandidates,
+          dtlsParameters: transport.dtlsParameters,
+        },
+      });
+    } catch (error) {
+      console.error("Error creating transport:", error);
+      callback({ error: "Failed to create transport" });
+    }
+  });
+
+  socket.on(
+    "connect-transport",
+    async ({ transportId, dtlsParameters }, callback) => {
+      try {
+        await mediasoupManager.connectTransport(transportId, dtlsParameters);
+        callback({ success: true });
+      } catch (error) {
+        console.error("Error connecting transport:", error);
+        callback({ error: "Failed to connect transport" });
+      }
+    }
+  );
+
+  socket.on(
+    "produce",
+    async ({ transportId, kind, rtpParameters, appData }, callback) => {
+      try {
+        // Pass the socket.id as peerId to the MediaSoup manager
+        const producer = await mediasoupManager.produce(
+          transportId,
+          kind,
+          rtpParameters,
+          appData,
+          socket.id
+        );
+
+        // Notify other peers about new producer
+        const peer = peers.get(socket.id);
+        if (peer) {
+          socket.to(peer.roomId).emit("new-producer", {
+            producerId: producer.id,
+            peerId: socket.id,
+            kind,
+          });
+        }
+
+        callback({ id: producer.id });
+      } catch (error) {
+        console.error("Error producing:", error);
+        callback({ error: "Failed to produce" });
+      }
+    }
+  );
+
+  socket.on(
+    "consume",
+    async ({ transportId, producerId, rtpCapabilities }, callback) => {
+      try {
+        // Pass the socket.id as peerId to the consume method
+        const consumer = await mediasoupManager.consume(
+          transportId,
+          producerId,
+          rtpCapabilities,
+          socket.id
+        );
+
+        callback({
+          params: {
+            producerId,
+            id: consumer.id,
+            kind: consumer.kind,
+            rtpParameters: consumer.rtpParameters,
+          },
+        });
+      } catch (error) {
+        console.error("Error consuming:", error);
+        callback({ error: "Failed to consume" });
+      }
+    }
+  );
+
+  socket.on("resume-consumer", async ({ consumerId }, callback) => {
+    try {
+      await mediasoupManager.resumeConsumer(consumerId);
+      callback({ success: true });
+    } catch (error) {
+      console.error("Error resuming consumer:", error);
+      callback({ error: "Failed to resume consumer" });
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("User disconnected:", socket.id);
+
+    const peer = peers.get(socket.id);
+    if (peer) {
+      const room = rooms.get(peer.roomId);
+      if (room) {
+        room.peers.delete(socket.id);
+        if (room.peers.size === 0) {
+          rooms.delete(peer.roomId);
+        }
+      }
+
+      // Notify other peers
+      socket.to(peer.roomId).emit("peer-left", { peerId: socket.id });
     }
 
-    const streamers = room.getStreamers();
-    const viewers = room.getViewers();
-
-    res.json({
-      roomId,
-      streamers: streamers.length,
-      viewers: viewers.length,
-      totalParticipants: streamers.length + viewers.length
-    });
-  } catch (error) {
-    console.error("Error getting room info:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+    // Clean up peer resources
+    mediasoupManager.cleanupPeerResources(socket.id);
+    peers.delete(socket.id);
+  });
 });
 
-// RTP capabilities endpoint
-app.get("/api/rtp-capabilities", (req, res) => {
-  try {
-    const rtpCapabilities = mediasoupManager.getRtpCapabilities();
-    res.json({ rtpCapabilities });
-  } catch (error) {
-    console.error("Error getting RTP capabilities:", error);
-    res.status(500).json({ error: "Mediasoup not initialized" });
-  }
+// REST API endpoints
+app.get("/api/health", (req, res) => {
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// Mount HLS routes
-app.use("/hls", hlsRouter);
+app.get("/api/rooms", (req, res) => {
+  const roomList = Array.from(rooms.values()).map((room) => ({
+    id: room.id,
+    participants: room.peers.size,
+  }));
+  res.json({ rooms: roomList });
+});
+
+app.post("/api/rooms/:roomId/join", (req, res) => {
+  const { roomId } = req.params;
+  const room = rooms.get(roomId);
+
+  res.json({
+    roomExists: !!room,
+    participants: room ? room.peers.size : 0,
+  });
+});
 
 const PORT = process.env.PORT || 8000;
 
 server.listen(PORT, async () => {
+  await mediasoupManager.initialize();
   console.log(`Server running on port ${PORT}`);
-
-  try {
-    // Initialize Mediasoup
-    await mediasoupManager.initialize();
-    console.log("Mediasoup Initialized");
-
-    // Initialize HLS Manager
-    const router = mediasoupManager.getRouter();
-    if (router) {
-      const hlsManager = new HLSManager(router);
-      signalingServer.setHLSManager(hlsManager);
-      console.log("HLS Manager Initialized");
-    }
-
-  } catch (error) {
-    console.error("Failed to initialize services:", error);
-    process.exit(1);
-  }
 });
