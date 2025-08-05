@@ -1,10 +1,10 @@
-// WebSocket.ts
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { MediasoupManager } from "./MediasoupManager";
 
 interface Room {
   id: string;
   peers: Set<string>;
+  producers: Map<string, { producerId: string; kind: string; peerId: string }>;
 }
 
 const rooms = new Map<string, Room>();
@@ -19,7 +19,11 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
         socket.join(roomId);
 
         if (!rooms.has(roomId)) {
-          rooms.set(roomId, { id: roomId, peers: new Set() });
+          rooms.set(roomId, { 
+            id: roomId, 
+            peers: new Set(),
+            producers: new Map()
+          });
         }
 
         const room = rooms.get(roomId)!;
@@ -30,6 +34,10 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
 
         const existingPeers = Array.from(room.peers).filter((id) => id !== socket.id);
         socket.emit("existing-peers", { peers: existingPeers });
+
+        // Send existing producers to the new peer
+        const existingProducers = Array.from(room.producers.values());
+        socket.emit("existing-producers", { producers: existingProducers });
 
         console.log(`Peer ${socket.id} joined room ${roomId}`);
       } catch (error) {
@@ -87,6 +95,15 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
 
         const peer = peers.get(socket.id);
         if (peer) {
+          const room = rooms.get(peer.roomId);
+          if (room) {
+            room.producers.set(producer.id, {
+              producerId: producer.id,
+              kind,
+              peerId: socket.id
+            });
+          }
+
           socket.to(peer.roomId).emit("new-producer", {
             producerId: producer.id,
             peerId: socket.id,
@@ -134,6 +151,16 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
       }
     });
 
+    socket.on("get-room-producers", ({ roomId }, callback) => {
+      const room = rooms.get(roomId);
+      if (room) {
+        const producers = Array.from(room.producers.values());
+        callback({ producers });
+      } else {
+        callback({ producers: [] });
+      }
+    });
+
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);
 
@@ -142,6 +169,14 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
         const room = rooms.get(peer.roomId);
         if (room) {
           room.peers.delete(socket.id);
+          
+          // Remove producer entries for this peer
+          for (const [producerId, producerData] of room.producers.entries()) {
+            if (producerData.peerId === socket.id) {
+              room.producers.delete(producerId);
+            }
+          }
+
           if (room.peers.size === 0) {
             rooms.delete(peer.roomId);
           }
@@ -156,9 +191,14 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
   });
 };
 
-// Optional: export room/peer data if needed elsewhere
 export const getRoomList = () =>
   Array.from(rooms.values()).map((room) => ({
     id: room.id,
     participants: room.peers.size,
+    producers: Array.from(room.producers.values()),
   }));
+
+export const getRoomProducers = (roomId: string) => {
+  const room = rooms.get(roomId);
+  return room ? Array.from(room.producers.values()) : [];
+};

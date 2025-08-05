@@ -78,6 +78,13 @@ export class MediasoupManager {
     }
   }
 
+  getRouter(): Router {
+    if (!this.router) {
+      throw new Error("Router not initialized");
+    }
+    return this.router;
+  }
+
   private async createWorker(): Promise<Worker> {
     const worker = await mediasoup.createWorker({
       rtcMinPort: 10000,
