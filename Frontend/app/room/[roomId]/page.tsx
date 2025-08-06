@@ -1,181 +1,205 @@
-"use client"
+"use client";
 
-import { useEffect, useRef, useState } from "react"
-import { useParams, useRouter } from "next/navigation"
-import { io, type Socket } from "socket.io-client"
-import { Device } from "mediasoup-client"
-import { Video, Mic, PhoneOff, Copy, User, AlertTriangle, MicOff, VideoOff } from "lucide-react"
+import { useEffect, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { io, type Socket } from "socket.io-client";
+import { Device } from "mediasoup-client";
+import {
+  Video,
+  Mic,
+  PhoneOff,
+  Copy,
+  User,
+  AlertTriangle,
+  MicOff,
+  VideoOff,
+} from "lucide-react";
 
 interface Peer {
-  id: string
-  videoStream?: MediaStream
-  audioStream?: MediaStream
+  id: string;
+  videoStream?: MediaStream;
+  audioStream?: MediaStream;
 }
 
 export default function RoomPage() {
-  const params = useParams()
-  const router = useRouter()
-  const roomId = params?.roomId as string
+  const params = useParams();
+  const router = useRouter();
+  const roomId = params?.roomId as string;
 
-  const [isConnected, setIsConnected] = useState(false)
-  const [peers, setPeers] = useState<Map<string, Peer>>(new Map())
-  const [isVideoOn, setIsVideoOn] = useState(false)
-  const [isAudioOn, setIsAudioOn] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [isConnected, setIsConnected] = useState(false);
+  const [peers, setPeers] = useState<Map<string, Peer>>(new Map());
+  const [isVideoOn, setIsVideoOn] = useState(false);
+  const [isAudioOn, setIsAudioOn] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const socketRef = useRef<Socket | null>(null)
-  const deviceRef = useRef<Device | null>(null)
-  const localVideoRef = useRef<HTMLVideoElement>(null)
-  const producerTransportRef = useRef<any>(null)
-  const consumerTransportRef = useRef<any>(null)
-  const producersRef = useRef<Map<string, any>>(new Map())
-  const consumersRef = useRef<Map<string, any>>(new Map())
-  const localStreamRef = useRef<MediaStream | null>(null)
+  const socketRef = useRef<Socket | null>(null);
+  const deviceRef = useRef<Device | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const producerTransportRef = useRef<any>(null);
+  const consumerTransportRef = useRef<any>(null);
+  const producersRef = useRef<Map<string, any>>(new Map());
+  const consumersRef = useRef<Map<string, any>>(new Map());
+  const localStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    if (!roomId) return
-    initializeConnection()
+    if (!roomId) return;
+    initializeConnection();
     return () => {
-      cleanup()
-    }
-  }, [roomId])
+      cleanup();
+    };
+  }, [roomId]);
 
   const initializeConnection = async () => {
     try {
-      setError(null)
+      setError(null);
       // Initialize socket connection
-      socketRef.current = io(process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000")
-      setupSocketListeners()
+      socketRef.current = io(
+        process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:8000"
+      );
+      setupSocketListeners();
 
       // Get RTP capabilities and create device
       const rtpCapabilities = await new Promise((resolve) => {
-        socketRef.current?.emit("get-rtp-capabilities", resolve)
-      })
+        socketRef.current?.emit("get-rtp-capabilities", resolve);
+      });
 
       if ((rtpCapabilities as any).error) {
-        throw new Error((rtpCapabilities as any).error)
+        throw new Error((rtpCapabilities as any).error);
       }
 
       // Create mediasoup device
-      deviceRef.current = new Device()
+      deviceRef.current = new Device();
       await deviceRef.current.load({
         routerRtpCapabilities: (rtpCapabilities as any).rtpCapabilities,
-      })
+      });
 
       // Create transports
-      await createProducerTransport()
-      await createConsumerTransport()
+      await createProducerTransport();
+      await createConsumerTransport();
 
       // Join room
-      socketRef.current?.emit("join-room", { roomId })
-      setIsConnected(true)
+      socketRef.current?.emit("join-room", { roomId });
+      setIsConnected(true);
     } catch (error) {
-      console.error("Failed to initialize connection:", error)
-      setError("Failed to connect to the room. Please try again.")
+      console.error("Failed to initialize connection:", error);
+      setError("Failed to connect to the room. Please try again.");
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
   const setupSocketListeners = () => {
-    if (!socketRef.current) return
+    if (!socketRef.current) return;
 
     socketRef.current.on("connect", () => {
-      console.log("Socket connected")
-      setIsConnected(true)
-    })
+      console.log("Socket connected");
+      setIsConnected(true);
+    });
 
     socketRef.current.on("disconnect", () => {
-      console.log("Socket disconnected")
-      setIsConnected(false)
-    })
+      console.log("Socket disconnected");
+      setIsConnected(false);
+    });
 
     socketRef.current.on("peer-joined", ({ peerId }) => {
-      console.log("Peer joined:", peerId)
-      setPeers((prev) => new Map(prev.set(peerId, { id: peerId })))
-    })
+      console.log("Peer joined:", peerId);
+      setPeers((prev) => new Map(prev.set(peerId, { id: peerId })));
+    });
 
     socketRef.current.on("peer-left", ({ peerId }) => {
-      console.log("Peer left:", peerId)
+      console.log("Peer left:", peerId);
       // Clean up consumers for this peer first
-      const consumersToClose: string[] = []
+      const consumersToClose: string[] = [];
       for (const [consumerId, consumer] of consumersRef.current.entries()) {
         if (consumer.appData?.peerId === peerId) {
-          consumer.close()
-          consumersToClose.push(consumerId)
+          consumer.close();
+          consumersToClose.push(consumerId);
         }
       }
       // Remove closed consumers from map
-      consumersToClose.forEach((id) => consumersRef.current.delete(id))
+      consumersToClose.forEach((id) => consumersRef.current.delete(id));
 
       // Remove peer from state
       setPeers((prev) => {
-        const newPeers = new Map(prev)
-        newPeers.delete(peerId)
-        return newPeers
-      })
-    })
+        const newPeers = new Map(prev);
+        newPeers.delete(peerId);
+        return newPeers;
+      });
+    });
 
     socketRef.current.on("existing-peers", ({ peers }) => {
-      console.log("Existing peers:", peers)
+      console.log("Existing peers:", peers);
       setPeers((prev) => {
-        const newPeers = new Map(prev)
+        const newPeers = new Map(prev);
         peers.forEach((peerId: string) => {
-          newPeers.set(peerId, { id: peerId })
-        })
-        return newPeers
-      })
-    })
+          newPeers.set(peerId, { id: peerId });
+        });
+        return newPeers;
+      });
+    });
 
     socketRef.current.on("new-producer", ({ producerId, peerId, kind }) => {
-      console.log("New producer event received:", { producerId, peerId, kind })
+      console.log("New producer event received:", { producerId, peerId, kind });
       // Small delay to ensure transports are ready
       setTimeout(() => {
-        consume(producerId, peerId, kind)
-      }, 100)
-    })
+        consume(producerId, peerId, kind);
+      }, 100);
+    });
 
     socketRef.current.on("error", ({ message }) => {
-      console.error("Socket error:", message)
-      setError(message)
-    })
-  }
+      console.error("Socket error:", message);
+      setError(message);
+    });
+  };
 
   const createProducerTransport = async () => {
-    if (!socketRef.current || !deviceRef.current) return
+    if (!socketRef.current || !deviceRef.current) return;
 
     const transportParams = await new Promise((resolve) => {
-      socketRef.current?.emit("create-transport", { direction: "send" }, resolve)
-    })
+      socketRef.current?.emit(
+        "create-transport",
+        { direction: "send" },
+        resolve
+      );
+    });
 
     if ((transportParams as any).error) {
-      throw new Error((transportParams as any).error)
+      throw new Error((transportParams as any).error);
     }
 
-    producerTransportRef.current = deviceRef.current.createSendTransport((transportParams as any).params)
+    producerTransportRef.current = deviceRef.current.createSendTransport(
+      (transportParams as any).params
+    );
 
-    producerTransportRef.current.on("connect", async ({ dtlsParameters }: any, callback: any, errback: any) => {
-      try {
-        await new Promise((resolve) => {
-          socketRef.current?.emit(
-            "connect-transport",
-            {
-              transportId: producerTransportRef.current.id,
-              dtlsParameters,
-            },
-            resolve,
-          )
-        })
-        callback()
-      } catch (error) {
-        errback(error)
+    producerTransportRef.current.on(
+      "connect",
+      async ({ dtlsParameters }: any, callback: any, errback: any) => {
+        try {
+          await new Promise((resolve) => {
+            socketRef.current?.emit(
+              "connect-transport",
+              {
+                transportId: producerTransportRef.current.id,
+                dtlsParameters,
+              },
+              resolve
+            );
+          });
+          callback();
+        } catch (error) {
+          errback(error);
+        }
       }
-    })
+    );
 
     producerTransportRef.current.on(
       "produce",
-      async ({ kind, rtpParameters, appData }: any, callback: any, errback: any) => {
+      async (
+        { kind, rtpParameters, appData }: any,
+        callback: any,
+        errback: any
+      ) => {
         try {
           const result = await new Promise((resolve) => {
             socketRef.current?.emit(
@@ -186,91 +210,109 @@ export default function RoomPage() {
                 rtpParameters,
                 appData,
               },
-              resolve,
-            )
-          })
+              resolve
+            );
+          });
 
           if ((result as any).error) {
-            throw new Error((result as any).error)
+            throw new Error((result as any).error);
           }
-          callback({ id: (result as any).id })
+          callback({ id: (result as any).id });
         } catch (error) {
-          errback(error)
+          errback(error);
         }
-      },
-    )
-  }
+      }
+    );
+  };
 
   const createConsumerTransport = async () => {
-    if (!socketRef.current || !deviceRef.current) return
+    if (!socketRef.current || !deviceRef.current) return;
 
     const transportParams = await new Promise((resolve) => {
-      socketRef.current?.emit("create-transport", { direction: "recv" }, resolve)
-    })
+      socketRef.current?.emit(
+        "create-transport",
+        { direction: "recv" },
+        resolve
+      );
+    });
 
     if ((transportParams as any).error) {
-      throw new Error((transportParams as any).error)
+      throw new Error((transportParams as any).error);
     }
 
-    consumerTransportRef.current = deviceRef.current.createRecvTransport((transportParams as any).params)
+    consumerTransportRef.current = deviceRef.current.createRecvTransport(
+      (transportParams as any).params
+    );
 
-    consumerTransportRef.current.on("connect", async ({ dtlsParameters }: any, callback: any, errback: any) => {
-      try {
-        await new Promise((resolve) => {
-          socketRef.current?.emit(
-            "connect-transport",
-            {
-              transportId: consumerTransportRef.current.id,
-              dtlsParameters,
-            },
-            resolve,
-          )
-        })
-        callback()
-      } catch (error) {
-        errback(error)
+    consumerTransportRef.current.on(
+      "connect",
+      async ({ dtlsParameters }: any, callback: any, errback: any) => {
+        try {
+          await new Promise((resolve) => {
+            socketRef.current?.emit(
+              "connect-transport",
+              {
+                transportId: consumerTransportRef.current.id,
+                dtlsParameters,
+              },
+              resolve
+            );
+          });
+          callback();
+        } catch (error) {
+          errback(error);
+        }
       }
-    })
-  }
+    );
+  };
 
   const startVideo = async () => {
     try {
-      console.log("Starting video...")
+      console.log("Starting video...");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 1280 },
+          width: { ideal: 1280 }, // Assuming you want to capture at 1280x720
           height: { ideal: 720 },
           frameRate: { ideal: 30 },
         },
-      })
-      const videoTrack = stream.getVideoTracks()[0]
-      console.log("Got video track:", videoTrack.id)
+      });
+      const videoTrack = stream.getVideoTracks()[0];
+      console.log("Got video track:", videoTrack.id);
 
-      // If we already have a stream, add the new track
+      // Get current track settings for width and height
+      const settings = videoTrack.getSettings();
+      const videoWidth = settings.width;
+      const videoHeight = settings.height;
+      console.log("Captured video dimensions:", videoWidth, "x", videoHeight);
+
       if (localStreamRef.current) {
-        localStreamRef.current.addTrack(videoTrack)
+        localStreamRef.current.addTrack(videoTrack);
       } else {
-        localStreamRef.current = stream
+        localStreamRef.current = stream;
       }
 
       if (localVideoRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current
+        localVideoRef.current.srcObject = localStreamRef.current;
       }
 
-      console.log("About to produce video track...")
+      console.log("About to produce video track...");
       const producer = await producerTransportRef.current.produce({
         track: videoTrack,
         encodings: [{ maxBitrate: 500000 }],
         codecOptions: { videoGoogleStartBitrate: 1000 },
-      })
-      console.log("Video producer created:", producer.id)
-      producersRef.current.set("video", producer)
-      setIsVideoOn(true)
+        appData: {
+          width: videoWidth,
+          height: videoHeight,
+        },
+      });
+      console.log("Video producer created:", producer.id);
+      producersRef.current.set("video", producer);
+      setIsVideoOn(true);
     } catch (error) {
-      console.error("Error starting video:", error)
-      setError("Failed to start video. Please check your camera permissions.")
+      console.error("Error starting video:", error);
+      setError("Failed to start video. Please check your camera permissions.");
     }
-  }
+  };
 
   const startAudio = async () => {
     try {
@@ -280,75 +322,82 @@ export default function RoomPage() {
           noiseSuppression: true,
           autoGainControl: true,
         },
-      })
-      const audioTrack = stream.getAudioTracks()[0]
+      });
+      const audioTrack = stream.getAudioTracks()[0];
 
       // Add audio track to existing stream or create new one
       if (localStreamRef.current) {
-        localStreamRef.current.addTrack(audioTrack)
+        localStreamRef.current.addTrack(audioTrack);
       } else {
-        localStreamRef.current = stream
+        localStreamRef.current = stream;
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = localStreamRef.current
+          localVideoRef.current.srcObject = localStreamRef.current;
         }
       }
 
       const producer = await producerTransportRef.current.produce({
         track: audioTrack,
-      })
-      producersRef.current.set("audio", producer)
-      setIsAudioOn(true)
+      });
+      producersRef.current.set("audio", producer);
+      setIsAudioOn(true);
     } catch (error) {
-      console.error("Error starting audio:", error)
-      setError("Failed to start audio. Please check your microphone permissions.")
+      console.error("Error starting audio:", error);
+      setError(
+        "Failed to start audio. Please check your microphone permissions."
+      );
     }
-  }
+  };
 
   const stopVideo = () => {
-    const producer = producersRef.current.get("video")
+    const producer = producersRef.current.get("video");
     if (producer) {
-      producer.close()
-      producersRef.current.delete("video")
+      producer.close();
+      producersRef.current.delete("video");
     }
     if (localStreamRef.current) {
       localStreamRef.current.getVideoTracks().forEach((track) => {
-        track.stop()
-        localStreamRef.current?.removeTrack(track)
-      })
+        track.stop();
+        localStreamRef.current?.removeTrack(track);
+      });
     }
     // If no audio tracks remain, clear the video element
-    if (localStreamRef.current && localStreamRef.current.getTracks().length === 0) {
+    if (
+      localStreamRef.current &&
+      localStreamRef.current.getTracks().length === 0
+    ) {
       if (localVideoRef.current) {
-        localVideoRef.current.srcObject = null
+        localVideoRef.current.srcObject = null;
       }
-      localStreamRef.current = null
+      localStreamRef.current = null;
     }
-    setIsVideoOn(false)
-  }
+    setIsVideoOn(false);
+  };
 
   const stopAudio = () => {
-    const producer = producersRef.current.get("audio")
+    const producer = producersRef.current.get("audio");
     if (producer) {
-      producer.close()
-      producersRef.current.delete("audio")
+      producer.close();
+      producersRef.current.delete("audio");
     }
     if (localStreamRef.current) {
       localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.stop()
-        localStreamRef.current?.removeTrack(track)
-      })
+        track.stop();
+        localStreamRef.current?.removeTrack(track);
+      });
     }
-    setIsAudioOn(false)
-  }
+    setIsAudioOn(false);
+  };
 
   const consume = async (producerId: string, peerId: string, kind: string) => {
     try {
       if (!deviceRef.current || !consumerTransportRef.current) {
-        console.error("Device or transport not ready")
-        return
+        console.error("Device or transport not ready");
+        return;
       }
 
-      console.log(`Attempting to consume ${kind} from peer ${peerId}, producer ${producerId}`)
+      console.log(
+        `Attempting to consume ${kind} from peer ${peerId}, producer ${producerId}`
+      );
 
       const consumerParams = await new Promise((resolve) => {
         socketRef.current?.emit(
@@ -358,121 +407,128 @@ export default function RoomPage() {
             producerId,
             rtpCapabilities: deviceRef.current?.rtpCapabilities,
           },
-          resolve,
-        )
-      })
+          resolve
+        );
+      });
 
       if ((consumerParams as any).error) {
-        console.error("Error getting consumer params:", (consumerParams as any).error)
-        return
+        console.error(
+          "Error getting consumer params:",
+          (consumerParams as any).error
+        );
+        return;
       }
 
       const consumer = await consumerTransportRef.current.consume({
         ...(consumerParams as any).params,
         appData: { peerId, kind },
-      })
-      consumersRef.current.set(consumer.id, consumer)
+      });
+      consumersRef.current.set(consumer.id, consumer);
 
       // Resume consumer
       const resumeResult = await new Promise((resolve) => {
-        socketRef.current?.emit("resume-consumer", { consumerId: consumer.id }, resolve)
-      })
+        socketRef.current?.emit(
+          "resume-consumer",
+          { consumerId: consumer.id },
+          resolve
+        );
+      });
 
       if ((resumeResult as any).error) {
-        console.error("Error resuming consumer:", (resumeResult as any).error)
-        return
+        console.error("Error resuming consumer:", (resumeResult as any).error);
+        return;
       }
-      console.log(`Consumer resumed successfully: ${consumer.id}`)
+      console.log(`Consumer resumed successfully: ${consumer.id}`);
 
       // Handle the track
       consumer.on("trackended", () => {
-        console.log("Consumer track ended:", consumer.id)
-      })
+        console.log("Consumer track ended:", consumer.id);
+      });
       consumer.on("transportclose", () => {
-        console.log("Consumer transport closed:", consumer.id)
-      })
+        console.log("Consumer transport closed:", consumer.id);
+      });
 
       // Update peer with the new track
       setPeers((prev) => {
-        const newPeers = new Map(prev)
-        const oldPeer = newPeers.get(peerId) || { id: peerId }
+        const newPeers = new Map(prev);
+        const oldPeer = newPeers.get(peerId) || { id: peerId };
 
         // Create a new stream containing only the new track
-        const newTrackStream = new MediaStream([consumer.track])
+        const newTrackStream = new MediaStream([consumer.track]);
 
         // Create a NEW peer object by copying old properties
         // and adding the new stream. This is the key change.
         const updatedPeer: Peer = {
           ...oldPeer,
-        }
+        };
         if (kind === "video") {
-          updatedPeer.videoStream = newTrackStream
+          updatedPeer.videoStream = newTrackStream;
         } else if (kind === "audio") {
-          updatedPeer.audioStream = newTrackStream
+          updatedPeer.audioStream = newTrackStream;
         }
-        newPeers.set(peerId, updatedPeer)
-        console.log(`Updated peer ${peerId} with ${kind} stream`)
-        return newPeers
-      })
+        newPeers.set(peerId, updatedPeer);
+        console.log(`Updated peer ${peerId} with ${kind} stream`);
+        return newPeers;
+      });
     } catch (error) {
-      console.error("Error in consume function:", error)
+      console.error("Error in consume function:", error);
     }
-  }
+  };
 
   const leaveRoom = () => {
-    cleanup()
-    router.push("/")
-  }
+    cleanup();
+    router.push("/");
+  };
 
   const toggleVideo = () => {
     if (isVideoOn) {
-      stopVideo()
+      stopVideo();
     } else {
-      startVideo()
+      startVideo();
     }
-  }
+  };
 
   const toggleAudio = () => {
     if (isAudioOn) {
-      stopAudio()
+      stopAudio();
     } else {
-      startAudio()
+      startAudio();
     }
-  }
+  };
 
   const cleanup = () => {
     // Stop all tracks
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop())
-      localStreamRef.current = null
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
     }
     // Close all producers
-    producersRef.current.forEach((producer) => producer.close())
-    producersRef.current.clear()
+    producersRef.current.forEach((producer) => producer.close());
+    producersRef.current.clear();
     // Close all consumers
-    consumersRef.current.forEach((consumer) => consumer.close())
-    consumersRef.current.clear()
+    consumersRef.current.forEach((consumer) => consumer.close());
+    consumersRef.current.clear();
     // Close transports
     if (producerTransportRef.current) {
-      producerTransportRef.current.close()
-      producerTransportRef.current = null
+      producerTransportRef.current.close();
+      producerTransportRef.current = null;
     }
     if (consumerTransportRef.current) {
-      consumerTransportRef.current.close()
-      consumerTransportRef.current = null
+      consumerTransportRef.current.close();
+      consumerTransportRef.current = null;
     }
     // Disconnect socket
     if (socketRef.current) {
-      socketRef.current.disconnect()
-      socketRef.current = null
+      socketRef.current.disconnect();
+      socketRef.current = null;
     }
-    setIsConnected(false)
-    setIsVideoOn(false)
-    setIsAudioOn(false)
-    setPeers(new Map())
-  }
+    setIsConnected(false);
+    setIsVideoOn(false);
+    setIsAudioOn(false);
+    setPeers(new Map());
+  };
 
-  console.log("RoomPage rendering. Peers map:", peers)
+  console.log("RoomPage rendering. Peers map:", peers);
 
   if (isLoading) {
     return (
@@ -483,7 +539,7 @@ export default function RoomPage() {
           <p className="text-gray-600 text-sm mt-2">Room ID: {roomId}</p>
         </div>
       </div>
-    )
+    );
   }
 
   if (error && !isConnected) {
@@ -493,7 +549,9 @@ export default function RoomPage() {
           <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
             <AlertTriangle className="w-8 h-8 text-white" />
           </div>
-          <h2 className="text-gray-900 text-xl font-semibold mb-2">Connection Failed</h2>
+          <h2 className="text-gray-900 text-xl font-semibold mb-2">
+            Connection Failed
+          </h2>
           <p className="text-gray-600 mb-6">{error}</p>
           <div className="space-y-3">
             <button
@@ -511,20 +569,20 @@ export default function RoomPage() {
           </div>
         </div>
       </div>
-    )
+    );
   }
 
-  const totalParticipants = peers.size + 1
+  const totalParticipants = peers.size + 1;
   const gridCols =
     totalParticipants === 1
       ? "grid-cols-1"
       : totalParticipants === 2
-        ? "grid-cols-2"
-        : totalParticipants <= 4
-          ? "grid-cols-2"
-          : totalParticipants <= 6
-            ? "grid-cols-3"
-            : "grid-cols-4"
+      ? "grid-cols-2"
+      : totalParticipants <= 4
+      ? "grid-cols-2"
+      : totalParticipants <= 6
+      ? "grid-cols-3"
+      : "grid-cols-4";
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -532,10 +590,18 @@ export default function RoomPage() {
       <div className="bg-white border-b border-gray-200 p-4">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
           <div className="flex items-center space-x-4">
-            <h1 className="text-gray-900 text-xl font-semibold">Room: {roomId}</h1>
+            <h1 className="text-gray-900 text-xl font-semibold">
+              Room: {roomId}
+            </h1>
             <div className="flex items-center space-x-2">
-              <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`}></div>
-              <span className="text-sm text-gray-600">{isConnected ? "Connected" : "Disconnected"}</span>
+              <div
+                className={`w-3 h-3 rounded-full ${
+                  isConnected ? "bg-green-500" : "bg-red-500"
+                }`}
+              ></div>
+              <span className="text-sm text-gray-600">
+                {isConnected ? "Connected" : "Disconnected"}
+              </span>
             </div>
           </div>
           <div className="flex items-center space-x-4">
@@ -544,7 +610,9 @@ export default function RoomPage() {
               {totalParticipants !== 1 ? "s" : ""}
             </span>
             <button
-              onClick={() => navigator.clipboard.writeText(window.location.href)}
+              onClick={() =>
+                navigator.clipboard.writeText(window.location.href)
+              }
               className="bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 px-4 py-2 rounded-lg transition-colors text-sm flex items-center"
               title="Copy room link"
             >
@@ -565,7 +633,10 @@ export default function RoomPage() {
       {error && isConnected && (
         <div className="bg-red-600 text-white p-3 text-center">
           {error}
-          <button onClick={() => setError(null)} className="ml-4 underline hover:no-underline">
+          <button
+            onClick={() => setError(null)}
+            className="ml-4 underline hover:no-underline"
+          >
             Dismiss
           </button>
         </div>
@@ -577,7 +648,13 @@ export default function RoomPage() {
           <div className={`grid gap-4 h-full ${gridCols}`}>
             {/* Local Video */}
             <div className="relative bg-gray-100 rounded-lg overflow-hidden min-h-[200px] lg:min-h-[300px] border border-gray-200">
-              <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
               <div className="absolute bottom-4 left-4 bg-black/50 text-white px-2 py-1 rounded text-sm">
                 You {!isVideoOn ? "(Camera off)" : ""}
               </div>
@@ -620,7 +697,11 @@ export default function RoomPage() {
             }`}
             title={isVideoOn ? "Turn off camera" : "Turn on camera"}
           >
-            {isVideoOn ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
+            {isVideoOn ? (
+              <Video className="w-6 h-6" />
+            ) : (
+              <VideoOff className="w-6 h-6" />
+            )}
           </button>
           <button
             onClick={toggleAudio}
@@ -631,7 +712,11 @@ export default function RoomPage() {
             }`}
             title={isAudioOn ? "Turn off microphone" : "Turn on microphone"}
           >
-            {isAudioOn ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
+            {isAudioOn ? (
+              <Mic className="w-6 h-6" />
+            ) : (
+              <MicOff className="w-6 h-6" />
+            )}
           </button>
           <button
             onClick={leaveRoom}
@@ -643,52 +728,52 @@ export default function RoomPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function RemotePeer({ peer }: { peer: Peer }) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   // This effect handles attaching the video stream whenever it changes.
   useEffect(() => {
     if (videoRef.current) {
       if (peer.videoStream) {
-        console.log(`Attaching video stream for peer ${peer.id}`)
-        videoRef.current.srcObject = peer.videoStream
+        console.log(`Attaching video stream for peer ${peer.id}`);
+        videoRef.current.srcObject = peer.videoStream;
       } else {
         // If videoStream becomes null/undefined, clear the srcObject
-        videoRef.current.srcObject = null
+        videoRef.current.srcObject = null;
       }
     }
     // Cleanup function: when the component unmounts or peer.videoStream changes,
     // ensure the srcObject is cleared.
     return () => {
       if (videoRef.current) {
-        videoRef.current.srcObject = null
+        videoRef.current.srcObject = null;
       }
-    }
-  }, [peer.videoStream]) // [^2]
+    };
+  }, [peer.videoStream]); // [^2]
 
   // This effect handles attaching the audio stream whenever it changes.
   useEffect(() => {
     if (audioRef.current) {
       if (peer.audioStream) {
-        console.log(`Attaching audio stream for peer ${peer.id}`)
-        audioRef.current.srcObject = peer.audioStream
+        console.log(`Attaching audio stream for peer ${peer.id}`);
+        audioRef.current.srcObject = peer.audioStream;
       } else {
         // If audioStream becomes null/undefined, clear the srcObject
-        audioRef.current.srcObject = null
+        audioRef.current.srcObject = null;
       }
     }
     // Cleanup function: when the component unmounts or peer.audioStream changes,
     // ensure the srcObject is cleared.
     return () => {
       if (audioRef.current) {
-        audioRef.current.srcObject = null
+        audioRef.current.srcObject = null;
       }
-    }
-  }, [peer.audioStream]) // [^2]
+    };
+  }, [peer.audioStream]); // [^2]
 
   return (
     <div className="relative bg-gray-100 rounded-lg overflow-hidden min-h-[200px] lg:min-h-[300px] border border-gray-200">
@@ -699,7 +784,9 @@ function RemotePeer({ peer }: { peer: Peer }) {
         ref={videoRef}
         autoPlay
         playsInline
-        className={`w-full h-full object-cover ${peer.videoStream ? "block" : "hidden"}`}
+        className={`w-full h-full object-cover ${
+          peer.videoStream ? "block" : "hidden"
+        }`}
       />
 
       {/* The audio element is non-visual, so it can always be present. */}
@@ -729,5 +816,5 @@ function RemotePeer({ peer }: { peer: Peer }) {
         )}
       </div>
     </div>
-  )
+  );
 }

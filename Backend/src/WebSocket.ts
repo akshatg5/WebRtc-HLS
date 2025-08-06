@@ -4,7 +4,7 @@ import { MediasoupManager } from "./MediasoupManager";
 interface Room {
   id: string;
   peers: Set<string>;
-  producers: Map<string, { producerId: string; kind: string; peerId: string }>;
+  producers: Map<string, { producerId: string; kind: string; peerId: string ,appData : any}>;
 }
 
 const rooms = new Map<string, Room>();
@@ -100,7 +100,8 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
             room.producers.set(producer.id, {
               producerId: producer.id,
               kind,
-              peerId: socket.id
+              peerId: socket.id,
+              appData : appData
             });
           }
 
