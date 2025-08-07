@@ -7,7 +7,11 @@ import cors from "cors";
 import path from "path";
 import { MediasoupManager } from "./MediasoupManager";
 import { HLSManager } from "./HLSManager";
-import { getRoomList, registerSocketHandlers, getRoomProducers } from "./WebSocket"; // Import getRoomProducers here
+import {
+  getRoomList,
+  registerSocketHandlers,
+  getRoomProducers,
+} from "./WebSocket"; // Import getRoomProducers here
 
 const app = express();
 const server = createServer(app);
@@ -22,7 +26,19 @@ app.use(cors());
 app.use(express.json());
 
 // Serve static files for HLS
-app.use('/hls', express.static(path.join(process.cwd(), 'public', 'hls')));
+app.use('/hls', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Cache-Control', 'no-cache');
+  
+  if (req.path.endsWith('.m3u8')) {
+    res.type('application/vnd.apple.mpegurl');
+  } else if (req.path.endsWith('.ts')) {
+    res.type('video/mp2t');
+  }
+  
+  next();
+}, express.static(path.join(process.cwd(), 'public', 'hls')));
 
 // Initialize MediaSoup Manager
 const mediasoupManager = new MediasoupManager();
@@ -47,7 +63,6 @@ app.get("/api/rooms/:roomId/producers", (req, res) => {
   res.json({ producers });
 });
 
-
 app.post("/api/rooms/:roomId/join", (req, res) => {
   const { roomId } = req.params;
   const roomList = getRoomList();
@@ -65,37 +80,58 @@ app.post("/api/hls/start/:roomId", async (req, res) => {
     const { videoProducerId, audioProducerId } = req.body;
 
     if (!videoProducerId || !audioProducerId) {
-      return res.status(400).json({ error: "Video and audio producer IDs required" });
+      return res
+        .status(400)
+        .json({ error: "Video and audio producer IDs required" });
     }
 
     // Retrieve full producer info, which now includes appData (width/height)
     const roomProducers = getRoomProducers(roomId); // Get producers directly from WebSocket state
-    const videoProducerInfo = roomProducers.find((p: any) => p.producerId === videoProducerId);
-    const audioProducerInfo = roomProducers.find((p: any) => p.producerId === audioProducerId);
+    const videoProducerInfo = roomProducers.find(
+      (p: any) => p.producerId === videoProducerId
+    );
+    const audioProducerInfo = roomProducers.find(
+      (p: any) => p.producerId === audioProducerId
+    );
 
     if (!videoProducerInfo) {
-      return res.status(400).json({ error: `Video producer not found for ID: ${videoProducerId}` });
+      return res
+        .status(400)
+        .json({ error: `Video producer not found for ID: ${videoProducerId}` });
     }
     if (!audioProducerInfo) {
-      return res.status(400).json({ error: `Audio producer not found for ID: ${audioProducerId}` });
+      return res
+        .status(400)
+        .json({ error: `Audio producer not found for ID: ${audioProducerId}` });
     }
 
     // Extract width and height from the video producer's appData
     const videoWidth = videoProducerInfo.appData?.width;
     const videoHeight = videoProducerInfo.appData?.height;
 
-    if (typeof videoWidth !== 'number' || typeof videoHeight !== 'number' || videoWidth <= 0 || videoHeight <= 0) {
-        console.error(`Invalid video dimensions received for room ${roomId}: ${videoWidth}x${videoHeight}`);
-        return res.status(400).json({ error: "Invalid video dimensions received." });
+    if (
+      typeof videoWidth !== "number" ||
+      typeof videoHeight !== "number" ||
+      videoWidth <= 0 ||
+      videoHeight <= 0
+    ) {
+      console.error(
+        `Invalid video dimensions received for room ${roomId}: ${videoWidth}x${videoHeight}`
+      );
+      return res
+        .status(400)
+        .json({ error: "Invalid video dimensions received." });
     }
-    console.log(`Starting HLS for room ${roomId} with video dimensions: ${videoWidth}x${videoHeight}`);
+    console.log(
+      `Starting HLS for room ${roomId} with video dimensions: ${videoWidth}x${videoHeight}`
+    );
 
     const streamUrl = await hlsManager.startHLSStream(
       roomId,
       videoProducerId,
       audioProducerId,
-      videoWidth, 
-      videoHeight 
+      videoWidth,
+      videoHeight
     );
     res.json({ streamUrl, success: true });
   } catch (error) {
@@ -119,8 +155,8 @@ app.get("/api/hls/status/:roomId", (req, res) => {
   const { roomId } = req.params;
   const isActive = hlsManager.isStreamActive(roomId);
   const streamUrl = isActive ? hlsManager.getStreamUrl(roomId) : null;
-  
-  res.json({isActive, streamUrl,roomId});
+
+  res.json({ isActive, streamUrl, roomId });
 });
 
 app.get("/api/hls/streams", (req, res) => {

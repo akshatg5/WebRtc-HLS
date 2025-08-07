@@ -37,7 +37,9 @@ export default function WatchPage() {
   const getRoomProducers = async (roomId: string) => {
     try {
       // Fetch producers for the specific room directly
-      const response = await fetch(`http://localhost:8000/api/rooms/${roomId}/producers`);
+      const response = await fetch(
+        `http://localhost:8000/api/rooms/${roomId}/producers`
+      );
       const data = await response.json();
       return data.producers || []; // Ensure it returns the array of producers
     } catch (error) {
@@ -96,7 +98,7 @@ export default function WatchPage() {
           body: JSON.stringify({
             videoProducerId: videoProducer.producerId,
             audioProducerId: audioProducer.producerId,
-            videoWidth: videoWidth,   // Pass width
+            videoWidth: videoWidth, // Pass width
             videoHeight: videoHeight, // Pass height
           }),
         }
@@ -115,7 +117,6 @@ export default function WatchPage() {
         //     videoRef.current.load();
         //   }
         // }, 5000);
-
       } else {
         setError(data.error || "Failed to start stream");
       }
@@ -148,6 +149,19 @@ export default function WatchPage() {
 
   useEffect(() => {
     if (streamUrl && videoRef.current) {
+      // Test if manifest is accessible
+      fetch(streamUrl)
+        .then((response) => {
+          console.log("Manifest response status:", response.status);
+          return response.text();
+        })
+        .then((text) => {
+          console.log("Manifest content:", text);
+        })
+        .catch((error) => {
+          console.error("Failed to fetch manifest:", error);
+        });
+        
       if (Hls.isSupported()) {
         const hls = new Hls();
         hls.loadSource(streamUrl);

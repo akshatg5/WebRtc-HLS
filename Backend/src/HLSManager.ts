@@ -148,269 +148,205 @@ export class HLSManager {
     return await this.router.createPlainTransport({
       listenIp: { ip: "127.0.0.1", announcedIp: undefined },
       rtcpMux: false,
-      comedia: true,
+      comedia: false, // Changed to false - we want explicit connection
+      enableSctp: false,
+      enableSrtp: false,
     });
   }
 
   private async startFFmpegProcess(
-    stream: HLSStream,
-    videoRtpParameters: RtpParameters,
-    audioRtpParameters: RtpParameters,
-    videoWidth: number,
-    videoHeight: number
-  ): Promise<void> {
-    const ffmpegVideoPort = 20000;
-    const ffmpegAudioPort = 20002;
-    const ffmpegVideoRtcpPort = ffmpegVideoPort + 1;
-    const ffmpegAudioRtcpPort = ffmpegAudioPort + 1;
+  stream: HLSStream,
+  videoRtpParameters: RtpParameters,
+  audioRtpParameters: RtpParameters,
+  videoWidth: number,
+  videoHeight: number
+): Promise<void> {
+  const ffmpegVideoPort = 20000;
+  const ffmpegAudioPort = 20002;
+  const ffmpegVideoRtcpPort = ffmpegVideoPort + 1;
+  const ffmpegAudioRtcpPort = ffmpegAudioPort + 1;
 
-    const outputPath = path.join(stream.outputDir, "stream.m3u8");
+  const outputPath = path.join(stream.outputDir, "stream.m3u8");
 
-    if (!stream.videoConsumer || !stream.audioConsumer) {
-      throw new Error("Consumers are not initialized for FFmpeg setup.");
-    }
-
-    console.log("---------------------------");
-    console.log("Starting the FFMPEG process");
-    console.log("!!!!!!!!!! VIDEO WIDTH : ", videoWidth);
-    console.log("!!!!!!!!!! VIDEO HEIGHT : ", videoHeight);
-    console.log("---------------------------");
-    console.log("Testing RTP reception...");
-
-  
-    const videoRtpTest = await this.testRTPReception(ffmpegVideoPort);
-    const audioRtpTest = await this.testRTPReception(ffmpegAudioPort);
-
-    console.log(`Video RTP test: ${videoRtpTest ? "PASS" : "FAIL"}`);
-    console.log(`Audio RTP test: ${audioRtpTest ? "PASS" : "FAIL"}`);
-
-    if (!videoRtpTest || !audioRtpTest) {
-      throw new Error(
-        "RTP streams not detected - check MediaSoup transport connection"
-      );
-    }
-
-    // Enhanced SDP generation with better VP8 support
-    const videoSdpContent =
-      [
-        "v=0",
-        `o=- 0 0 IN IP4 127.0.0.1`,
-        "s=Mediasoup-HLS-Video",
-        `c=IN IP4 127.0.0.1`,
-        "t=0 0",
-        `m=video ${ffmpegVideoPort} RTP/AVP ${videoRtpParameters.codecs[0].payloadType}`,
-        `a=rtpmap:${
-          videoRtpParameters.codecs[0].payloadType
-        } ${videoRtpParameters.codecs[0].mimeType
-          .split("/")[1]
-          .toUpperCase()}/${videoRtpParameters.codecs[0].clockRate}`,
-        // Add framesize attribute for VP8
-        `a=framesize:${videoRtpParameters.codecs[0].payloadType} ${videoWidth}-${videoHeight}`,
-        // Add explicit video dimensions as custom attribute
-        `a=x-dimensions:${videoWidth}x${videoHeight}`,
-        ...(videoRtpParameters.codecs[0].parameters &&
-        Object.keys(videoRtpParameters.codecs[0].parameters).length > 0
-          ? [
-              `a=fmtp:${
-                videoRtpParameters.codecs[0].payloadType
-              } ${Object.entries(videoRtpParameters.codecs[0].parameters)
-                .map(([k, v]) => `${k}=${v}`)
-                .join(";")}`,
-            ]
-          : []),
-        ...(videoRtpParameters.codecs[0].rtcpFeedback
-          ? videoRtpParameters.codecs[0].rtcpFeedback.map(
-              (fb: { type: string; parameter?: string }) =>
-                `a=rtcp-fb:${videoRtpParameters.codecs[0].payloadType} ${
-                  fb.type
-                }${fb.parameter ? " " + fb.parameter : ""}`
-            )
-          : []),
-        `a=recvonly`,
-        `a=mid:${videoRtpParameters.mid || "0"}`,
-        `a=ssrc:${videoRtpParameters.encodings?.[0]?.ssrc || "1"} cname:${
-          videoRtpParameters.rtcp?.cname || "video-stream"
-        }`,
-        `a=rtcp:${ffmpegVideoRtcpPort}`,
-      ].join("\r\n") + "\r\n";
-
-    const audioSdpContent =
-      [
-        "v=0",
-        `o=- 0 0 IN IP4 127.0.0.1`,
-        "s=Mediasoup-HLS-Audio",
-        `c=IN IP4 127.0.0.1`,
-        "t=0 0",
-        `m=audio ${ffmpegAudioPort} RTP/AVP ${audioRtpParameters.codecs[0].payloadType}`,
-        `a=rtpmap:${
-          audioRtpParameters.codecs[0].payloadType
-        } ${audioRtpParameters.codecs[0].mimeType
-          .split("/")[1]
-          .toUpperCase()}/${audioRtpParameters.codecs[0].clockRate}/${
-          audioRtpParameters.codecs[0].channels || 2
-        }`,
-        ...(audioRtpParameters.codecs[0].parameters &&
-        Object.keys(audioRtpParameters.codecs[0].parameters).length > 0
-          ? [
-              `a=fmtp:${
-                audioRtpParameters.codecs[0].payloadType
-              } ${Object.entries(audioRtpParameters.codecs[0].parameters)
-                .map(([k, v]) => `${k}=${v}`)
-                .join(";")}`,
-            ]
-          : []),
-        `a=recvonly`,
-        `a=mid:${audioRtpParameters.mid || "0"}`,
-        `a=ssrc:${audioRtpParameters.encodings?.[0]?.ssrc || "2"} cname:${
-          audioRtpParameters.rtcp?.cname || "audio-stream"
-        }`,
-        `a=rtcp:${ffmpegAudioRtcpPort}`,
-      ].join("\r\n") + "\r\n";
-
-    const videoSdpFilePath = path.join(stream.outputDir, "video.sdp");
-    const audioSdpFilePath = path.join(stream.outputDir, "audio.sdp");
-
-    fs.writeFileSync(videoSdpFilePath, videoSdpContent);
-    fs.writeFileSync(audioSdpFilePath, audioSdpContent);
-
-    console.log(`SDP file generated: ${videoSdpFilePath}`);
-    console.log(`SDP file generated: ${audioSdpFilePath}`);
-
-    // Only connect transports if they haven't been connected yet
-    try {
-      // Check if transport is already connected by checking its state
-      if (stream.videoTransport && !(stream.videoTransport as any)._connected) {
-        await stream.videoTransport.connect({
-          ip: "127.0.0.1",
-          port: ffmpegVideoPort,
-          rtcpPort: ffmpegVideoRtcpPort,
-        });
-        (stream.videoTransport as any)._connected = true;
-        console.log(
-          `Mediasoup video transport sending RTP to FFmpeg at 127.0.0.1:${ffmpegVideoPort} (RTCP: ${ffmpegVideoRtcpPort})`
-        );
-      }
-
-      if (stream.audioTransport && !(stream.audioTransport as any)._connected) {
-        await stream.audioTransport.connect({
-          ip: "127.0.0.1",
-          port: ffmpegAudioPort,
-          rtcpPort: ffmpegAudioRtcpPort,
-        });
-        (stream.audioTransport as any)._connected = true;
-        console.log(
-          `Mediasoup audio transport sending RTP to FFmpeg at 127.0.0.1:${ffmpegAudioPort} (RTCP: ${ffmpegAudioRtcpPort})`
-        );
-      }
-    } catch (error) {
-      console.error("Transport connection error:", error);
-      // If transport connection fails, the transports are likely already connected
-    }
-
-    // Wait for RTP streams to be established
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    // Simplified FFmpeg command - try basic approach first
-    stream.ffmpegProcess = ffmpeg()
-      .input(videoSdpFilePath)
-      .inputOptions([
-        "-protocol_whitelist",
-        "file,rtp,udp",
-        "-fflags",
-        "+genpts+discardcorrupt",
-        "-probesize",
-        "5000000",
-        "-analyzeduration",
-        "5000000",
-        "-re",
-      ])
-      .input(audioSdpFilePath)
-      .inputOptions([
-        "-protocol_whitelist",
-        "file,rtp,udp",
-        "-fflags",
-        "+genpts+discardcorrupt",
-        "-probesize",
-        "5000000",
-        "-analyzeduration",
-        "5000000",
-      ])
-      .outputOptions([
-        "-y",
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        // Force video size explicitly
-        "-s",
-        `${videoWidth}x${videoHeight}`,
-        "-r",
-        "30",
-        "-c:v",
-        "libx264",
-        "-c:a",
-        "aac",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-profile:v",
-        "baseline",
-        "-pix_fmt",
-        "yuv420p",
-        "-x264-params",
-        "keyint=30:min-keyint=30:no-scenecut",
-        "-b:v",
-        "1000k",
-        "-b:a",
-        "128k",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-f",
-        "hls",
-        "-hls_time",
-        "4",
-        "-hls_list_size",
-        "5",
-        "-hls_flags",
-        "delete_segments+independent_segments",
-        "-hls_segment_filename",
-        path.join(stream.outputDir, "segment_%03d.ts"),
-        "-avoid_negative_ts",
-        "make_zero",
-      ])
-      .output(outputPath)
-      .on("start", (commandLine: string) => {
-        console.log("FFmpeg started:", commandLine);
-      })
-      .on("error", (err: Error) => {
-        console.error("FFmpeg error:", err.message);
-        // Don't restart automatically to avoid the transport connection error
-        console.log("FFmpeg failed - stopping HLS stream");
-        this.stopHLSStream(stream.roomId);
-      })
-      .on("end", () => {
-        console.log("FFmpeg ended for room:", stream.roomId);
-      })
-      .on("stderr", (stderrLine: string) => {
-        if (stderrLine.includes("frame=") || stderrLine.includes("time=")) {
-          // Progress info - log occasionally
-          if (Math.random() < 0.1)
-            console.log("FFmpeg progress:", stderrLine.trim());
-        } else if (
-          stderrLine.includes("Error") ||
-          stderrLine.includes("failed")
-        ) {
-          console.error("FFmpeg stderr:", stderrLine);
-        }
-      });
-
-    stream.ffmpegProcess.run();
+  if (!stream.videoConsumer || !stream.audioConsumer) {
+    throw new Error("Consumers are not initialized for FFmpeg setup.");
   }
 
-  // Remove the restart method since we're not using auto-restart anymore
+  console.log("---------------------------");
+  console.log("Starting the FFMPEG process");
+  console.log("!!!!!!!!!! VIDEO WIDTH : ", videoWidth);
+  console.log("!!!!!!!!!! VIDEO HEIGHT : ", videoHeight);
+  console.log("---------------------------");
+
+  // Connect transports to FFmpeg ports FIRST
+  await stream?.videoTransport?.connect({
+    ip: "127.0.0.1",
+    port: ffmpegVideoPort,
+    rtcpPort: ffmpegVideoRtcpPort,
+  });
+  console.log(`Video transport connected to ${ffmpegVideoPort}`);
+
+  await stream?.audioTransport?.connect({
+    ip: "127.0.0.1",
+    port: ffmpegAudioPort,
+    rtcpPort: ffmpegAudioRtcpPort,
+  });
+  console.log(`Audio transport connected to ${ffmpegAudioPort}`);
+
+  // Wait for transports to establish connection
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  // Test RTP reception
+  console.log("Testing RTP reception after transport connection...");
+  const videoRtpTest = await this.testRTPReception(ffmpegVideoPort);
+  const audioRtpTest = await this.testRTPReception(ffmpegAudioPort);
+
+  console.log(`Video RTP test: ${videoRtpTest ? "PASS" : "FAIL"}`);
+  console.log(`Audio RTP test: ${audioRtpTest ? "PASS" : "FAIL"}`);
+
+  if (!videoRtpTest && !audioRtpTest) {
+    throw new Error("No RTP streams detected after transport connection");
+  }
+
+  if (!videoRtpParameters.encodings || !audioRtpParameters.encodings) {
+    throw new Error("Cannot find encodings for videoRtp or audioRtp")
+  }
+
+  // Create proper SDP files for RTP streams
+  const videoSdpContent = [
+    "v=0",
+    "o=- 0 0 IN IP4 127.0.0.1",
+    "s=Video Stream",
+    "c=IN IP4 127.0.0.1",
+    "t=0 0",
+    `m=video ${ffmpegVideoPort} RTP/AVP ${videoRtpParameters.codecs[0].payloadType}`,
+    `a=rtpmap:${videoRtpParameters.codecs[0].payloadType} ${videoRtpParameters.codecs[0].mimeType.split("/")[1].toUpperCase()}/${videoRtpParameters.codecs[0].clockRate}`,
+    `a=sendonly`,
+    `a=ssrc:${videoRtpParameters.encodings[0].ssrc}`,
+  ].join("\r\n") + "\r\n";
+
+  const audioSdpContent = [
+    "v=0", 
+    "o=- 0 0 IN IP4 127.0.0.1",
+    "s=Audio Stream",
+    "c=IN IP4 127.0.0.1", 
+    "t=0 0",
+    `m=audio ${ffmpegAudioPort} RTP/AVP ${audioRtpParameters.codecs[0].payloadType}`,
+    `a=rtpmap:${audioRtpParameters.codecs[0].payloadType} ${audioRtpParameters.codecs[0].mimeType.split("/")[1].toUpperCase()}/${audioRtpParameters.codecs[0].clockRate}`,
+    `a=sendonly`,
+    `a=ssrc:${audioRtpParameters?.encodings[0]?.ssrc}`,
+  ].join("\r\n") + "\r\n";
+
+  const videoSdpPath = path.join(stream.outputDir, "video.sdp");
+  const audioSdpPath = path.join(stream.outputDir, "audio.sdp");
+
+  fs.writeFileSync(videoSdpPath, videoSdpContent);
+  fs.writeFileSync(audioSdpPath, audioSdpContent);
+
+  console.log("SDP files created:");
+  console.log("Video SDP:", videoSdpContent);
+  console.log("Audio SDP:", audioSdpContent);
+
+  // Start FFmpeg with SDP files and improved settings
+  console.log("Starting FFmpeg with SDP files...");
+  
+  stream.ffmpegProcess = ffmpeg()
+    .input(videoSdpPath)
+    .inputOptions([
+      "-protocol_whitelist", "file,rtp,udp",
+      "-fflags", "+genpts",
+      "-rw_timeout", "30000000", // 30 second timeout
+      "-probesize", "32768",     // Smaller probe size
+      "-analyzeduration", "1000000", // 1 second analysis
+    ])
+    .input(audioSdpPath)
+    .inputOptions([
+      "-protocol_whitelist", "file,rtp,udp",
+      "-fflags", "+genpts", 
+      "-rw_timeout", "30000000",
+      "-probesize", "32768",
+      "-analyzeduration", "1000000",
+    ])
+    .outputOptions([
+      "-y",
+      "-map", "0:v:0",
+      "-map", "1:a:0", 
+      "-c:v", "libx264",
+      "-c:a", "aac",
+      "-preset", "ultrafast",
+      "-tune", "zerolatency",
+      "-profile:v", "baseline",
+      "-level", "3.1",
+      "-pix_fmt", "yuv420p",
+      "-s", `${videoWidth}x${videoHeight}`,
+      "-r", "30",
+      "-g", "30", // GOP size
+      "-keyint_min", "30",
+      "-sc_threshold", "0", // Disable scene change detection
+      "-b:v", "1000k",
+      "-maxrate", "1200k",
+      "-bufsize", "2000k",
+      "-b:a", "128k",
+      "-ar", "48000",
+      "-ac", "2",
+      "-f", "hls",
+      "-hls_time", "2", // Shorter segment time for faster startup
+      "-hls_list_size", "10",
+      "-hls_flags", "delete_segments+independent_segments",
+      "-hls_segment_filename", path.join(stream.outputDir, "segment_%03d.ts"),
+      "-hls_start_number_source", "datetime",
+      "-avoid_negative_ts", "make_zero",
+      "-loglevel", "verbose" // More verbose logging
+    ])
+    .output(outputPath)
+    .on("start", (commandLine: string) => {
+      console.log("FFmpeg started with command:");
+      console.log(commandLine);
+    })
+    .on("error", (err: Error) => {
+      console.error("FFmpeg error:", err.message);
+      console.log("FFmpeg failed - stopping HLS stream");
+      this.stopHLSStream(stream.roomId);
+    })
+    .on("end", () => {
+      console.log("FFmpeg ended for room:", stream.roomId);
+    })
+    .on("stderr", (stderrLine: string) => {
+      console.log("FFmpeg:", stderrLine.trim());
+    });
+
+  // Add a small delay before starting FFmpeg to ensure RTP is flowing
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  
+  stream.ffmpegProcess.run();
+
+  // Check file creation after delay
+  setTimeout(() => {
+    const manifestPath = path.join(stream.outputDir, "stream.m3u8");
+    
+    console.log(`\n=== HLS Output Check for room ${stream.roomId} ===`);
+    console.log(`Manifest exists: ${fs.existsSync(manifestPath)}`);
+    
+    if (fs.existsSync(manifestPath)) {
+      const manifestContent = fs.readFileSync(manifestPath, 'utf8');
+      console.log(`Manifest content:\n${manifestContent}`);
+    }
+    
+    try {
+      const files = fs.readdirSync(stream.outputDir);
+      const segmentFiles = files.filter(file => file.startsWith('segment_') && file.endsWith('.ts'));
+      console.log(`Segment files found: ${segmentFiles.length}`);
+      segmentFiles.forEach(file => {
+        const filePath = path.join(stream.outputDir, file);
+        const stats = fs.statSync(filePath);
+        console.log(`${file}: ${stats.size} bytes`);
+      });
+    } catch (error) {
+      console.log("Error reading directory:", error);
+    }
+    console.log("=== End HLS Output Check ===\n");
+  }, 15000); // Check after 15 seconds
+}
 
   stopHLSStream(roomId: string): void {
     const stream = this.streams.get(roomId);
