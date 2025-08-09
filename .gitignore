@@ -3,3 +3,4 @@ dist
 hls-output
 audio.sdp
 video.sdp
+Backend/public/
