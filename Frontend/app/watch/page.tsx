@@ -96,10 +96,6 @@ export default function WatchPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            videoProducerId: videoProducer.producerId,
-            audioProducerId: audioProducer.producerId,
-            videoWidth: videoWidth, // Pass width
-            videoHeight: videoHeight, // Pass height
           }),
         }
       );

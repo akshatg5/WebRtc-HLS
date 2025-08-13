@@ -1,5 +1,3 @@
-// src/server.ts
-
 import express from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
@@ -11,7 +9,7 @@ import {
   getRoomList,
   registerSocketHandlers,
   getRoomProducers,
-} from "./WebSocket"; // Import getRoomProducers here
+} from "./WebSocket";
 
 type ParticipantInput = { videoProducerId: string; audioProducerId: string };
 

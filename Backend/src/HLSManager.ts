@@ -54,7 +54,7 @@ export class HLSManager {
     if (participants.length === 0) {
       throw new Error("No participants provided for HLS stream");
     }
-    
+
     if (participants.length > 4) {
       throw new Error("HLS not supported for more than 4 users. Current participants: " + participants.length);
     }
@@ -79,7 +79,7 @@ export class HLSManager {
 
     try {
       console.log(`Starting HLS for room ${roomId} with ${participants.length} participants`);
-      
+
       // Create consumers and transports for each participant
       for (let i = 0; i < participants.length; i++) {
         const participant = participants[i];
@@ -127,10 +127,51 @@ export class HLSManager {
 
       return this.getStreamUrl(roomId);
     } catch (error) {
-      console.error(`Failed to start multi-participant HLS stream for room ${roomId}:`, error);
+      console.error(`Failed to start multi-participant HLS stream started and ready for room ${roomId}:`, error);
       this.cleanup(stream);
       throw error;
     }
+  }
+
+  private async waitForFirstSegment(stream: HLSStream, timeoutMs: number = 30000): Promise<void> {
+    const manifestPath = path.join(stream.outputDir, "stream.m3u8");
+    const startTime = Date.now();
+  
+    return new Promise((resolve, reject) => {
+      const checkInterval = setInterval(() => {
+        // Check if we've exceeded timeout
+        if (Date.now() - startTime > timeoutMs) {
+          clearInterval(checkInterval);
+          reject(new Error(`Timeout waiting for HLS manifest after ${timeoutMs}ms`));
+          return;
+        }
+  
+        // Check if manifest file exists and has content
+        if (fs.existsSync(manifestPath)) {
+          try {
+            const manifestContent = fs.readFileSync(manifestPath, 'utf8');
+            
+            // Check if manifest has at least one segment
+            if (manifestContent.includes('.ts')) {
+              // Check if the first segment file actually exists
+              const segmentMatch = manifestContent.match(/segment_\d+\.ts/);
+              if (segmentMatch) {
+                const segmentPath = path.join(stream.outputDir, segmentMatch[0]);
+                if (fs.existsSync(segmentPath)) {
+                  clearInterval(checkInterval);
+                  console.log(`HLS first segment ready: ${segmentMatch[0]}`);
+                  resolve();
+                  return;
+                }
+              }
+            }
+          } catch (error) {
+            // File exists but can't read it yet, continue waiting
+            console.log("File exists but can't read yet, waiting")
+          }
+        }
+      }, 500); // Check every 500ms
+    });
   }
 
   // New method for handling multi-participant FFmpeg process
@@ -147,10 +188,10 @@ export class HLSManager {
 
     // Connect all transports and create SDP files
     const sdpFiles: { video: string; audio: string }[] = [];
-    
+
     for (let i = 0; i < stream.participants.length; i++) {
       const participant = stream.participants[i];
-      
+
       // Connect transports
       await participant.videoTransport.connect({
         ip: "127.0.0.1",
@@ -192,7 +233,7 @@ export class HLSManager {
     }
 
     // Wait for connections to establish
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, 10000));
 
     // Test RTP reception for all participants
     await this.testMultiParticipantRTP(stream);
@@ -257,7 +298,8 @@ export class HLSManager {
         "-f", "hls",
         "-hls_time", "2",
         "-hls_list_size", "10",
-        "-hls_flags", "delete_segments+independent_segments",
+        "-hls_flags", "independent_segments",
+        "-hls_delete_threshold", "1",
         "-hls_segment_filename", path.join(stream.outputDir, "segment_%03d.ts"),
         "-hls_start_number_source", "datetime",
         "-avoid_negative_ts", "make_zero",
@@ -269,7 +311,7 @@ export class HLSManager {
       .on("start", (commandLine: string) => {
         console.log("Multi-participant FFmpeg started:");
         console.log(commandLine);
-        
+
         // Enhanced keyframe requesting - repeat for first few seconds to ensure startup
         const requestKeyframesForAllParticipants = () => {
           stream.participants.forEach((participant, index) => {
@@ -278,14 +320,14 @@ export class HLSManager {
             }, index * 100); // Stagger by 100ms per participant
           });
         };
-      
+
         // Request keyframes immediately and then repeat every 1 second for 5 seconds
         requestKeyframesForAllParticipants();
-        
+
         const keyframeInterval = setInterval(() => {
           requestKeyframesForAllParticipants();
-        }, 1000);
-      
+        }, 2000);
+
         // Stop repeated requests after 5 seconds
         setTimeout(() => {
           clearInterval(keyframeInterval);
@@ -310,6 +352,8 @@ export class HLSManager {
     await new Promise((resolve) => setTimeout(resolve, 5000));
     stream.ffmpegProcess.run();
 
+    await this.waitForFirstSegment(stream);
+
     // Check output after delay
     setTimeout(() => {
       this.checkHLSOutput(stream);
@@ -332,25 +376,25 @@ export class HLSManager {
         videoFilter = "[0:v]scale=1280:720[vout]";
         audioFilter = "[1:a]anull[aout]";
         break;
-        
+
       case 2:
         // Two participants - side by side
         videoFilter = "[0:v]scale=640:720[v0];[2:v]scale=640:720[v1];[v0][v1]hstack=inputs=2[vout]";
         audioFilter = "[1:a][3:a]amix=inputs=2:duration=longest[aout]";
         break;
-        
+
       case 3:
         // Three participants - one large on left, two small stacked on right
         videoFilter = "[0:v]scale=853:720[v0];[2:v]scale=427:360[v1];[4:v]scale=427:360[v2];[v1][v2]vstack=inputs=2[vright];[v0][vright]hstack=inputs=2[vout]";
         audioFilter = "[1:a][3:a][5:a]amix=inputs=3:duration=longest[aout]";
         break;
-        
+
       case 4:
         // Four participants - 2x2 grid
         videoFilter = "[0:v]scale=640:360[v0];[2:v]scale=640:360[v1];[4:v]scale=640:360[v2];[6:v]scale=640:360[v3];[v0][v1]hstack=inputs=2[top];[v2][v3]hstack=inputs=2[bottom];[top][bottom]vstack=inputs=2[vout]";
         audioFilter = "[1:a][3:a][5:a][7:a]amix=inputs=4:duration=longest[aout]";
         break;
-        
+
       default:
         throw new Error(`Unsupported participant count: ${participantCount}`);
     }
@@ -366,19 +410,19 @@ export class HLSManager {
   // Test RTP reception for all participants
   private async testMultiParticipantRTP(stream: HLSStream): Promise<void> {
     console.log("Testing RTP reception for all participants...");
-    
+
     const testPromises = stream.participants.map(async (participant, index) => {
       const videoTest = await this.testRTPReception(participant.videoPort);
       const audioTest = await this.testRTPReception(participant.audioPort);
-      
+
       console.log(`Participant ${index + 1} - Video RTP: ${videoTest ? "PASS" : "FAIL"}, Audio RTP: ${audioTest ? "PASS" : "FAIL"}`);
-      
+
       return videoTest && audioTest;
     });
 
     const results = await Promise.all(testPromises);
     const allPassed = results.every(result => result);
-    
+
     if (!allPassed) {
       console.warn("Some RTP tests failed, but continuing with FFmpeg startup...");
     } else {
@@ -425,7 +469,6 @@ export class HLSManager {
     }
   }
 
-  // Keep existing methods unchanged
   private async testRTPReception(port: number): Promise<boolean> {
     return new Promise((resolve) => {
       const dgram = require("dgram");
@@ -525,8 +568,7 @@ export class HLSManager {
     if (codec.rtcpFeedback && codec.rtcpFeedback.length > 0) {
       codec.rtcpFeedback.forEach((feedback) => {
         sdpLines.push(
-          `a=rtcp-fb:${codec.payloadType} ${feedback.type}${
-            feedback.parameter ? " " + feedback.parameter : ""
+          `a=rtcp-fb:${codec.payloadType} ${feedback.type}${feedback.parameter ? " " + feedback.parameter : ""
           }`
         );
       });
@@ -561,8 +603,7 @@ export class HLSManager {
       `m=audio ${port} RTP/AVP ${codec.payloadType}`,
       `a=rtpmap:${codec.payloadType} ${codec.mimeType
         .split("/")[1]
-        .toUpperCase()}/${codec.clockRate}${
-        codec.channels ? "/" + codec.channels : ""
+        .toUpperCase()}/${codec.clockRate}${codec.channels ? "/" + codec.channels : ""
       }`,
       "a=recvonly",
       `a=mid:${rtpParameters.mid || "0"}`,
