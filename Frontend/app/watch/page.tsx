@@ -5,17 +5,52 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Loader2 } from "lucide-react";
+import { Play, Square, Loader2, Users, Video, Mic, RefreshCw } from "lucide-react";
 import Hls from "hls.js";
 
+interface Producer {
+  producerId: string;
+  kind: "audio" | "video";
+  peerId: string;
+  appData?: any;
+}
+
+interface Room {
+  id: string;
+  participants: number;
+  producers: Producer[];
+}
+
 export default function WatchPage() {
-  const [roomId, setRoomId] = useState("");
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState("");
   const [isWatching, setIsWatching] = useState(false);
   const [streamUrl, setStreamUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [roomProducers, setRoomProducers] = useState<any[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Fetch active rooms
+  const fetchRooms = async () => {
+    try {
+      setRoomsLoading(true);
+      const response = await fetch("http://localhost:8000/api/rooms");
+      const data = await response.json();
+      setRooms(data.rooms || []);
+    } catch (error) {
+      console.error("Error fetching rooms:", error);
+    } finally {
+      setRoomsLoading(false);
+    }
+  };
+
+  // Auto-refresh rooms every 5 seconds
+  useEffect(() => {
+    fetchRooms();
+    const interval = setInterval(fetchRooms, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const checkRoomStatus = async (roomId: string) => {
     try {
@@ -34,57 +69,15 @@ export default function WatchPage() {
     }
   };
 
-  const getRoomProducers = async (roomId: string) => {
-    try {
-      // Fetch producers for the specific room directly
-      const response = await fetch(
-        `http://localhost:8000/api/rooms/${roomId}/producers`
-      );
-      const data = await response.json();
-      return data.producers || []; // Ensure it returns the array of producers
-    } catch (error) {
-      console.error("Error getting room producers:", error);
-      return [];
-    }
-  };
-
-  const startHLSStream = async () => {
+  const startHLSStream = async (roomId: string) => {
     setLoading(true);
     setError("");
+    setSelectedRoomId(roomId);
 
     try {
       const roomStatus = await checkRoomStatus(roomId);
       if (!roomStatus?.roomExists || roomStatus.participants === 0) {
         setError("Room not found or no active participants");
-        setLoading(false);
-        return;
-      }
-
-      const producers = await getRoomProducers(roomId);
-      setRoomProducers(producers);
-
-      if (producers.length === 0) {
-        setError("No active streams in this room");
-        setLoading(false);
-        return;
-      }
-
-      const videoProducer = producers.find((p: any) => p.kind === "video");
-      const audioProducer = producers.find((p: any) => p.kind === "audio");
-
-      if (!videoProducer || !audioProducer) {
-        setError("Room must have both video and audio streams");
-        setLoading(false);
-        return;
-      }
-
-      // Extract width and height from videoProducer's appData
-      // Assuming appData structure from RoomPage.tsx (e.g., appData: { width, height })
-      const videoWidth = videoProducer.appData?.width;
-      const videoHeight = videoProducer.appData?.height;
-
-      if (!videoWidth || !videoHeight) {
-        setError("Could not retrieve video dimensions for HLS streaming.");
         setLoading(false);
         return;
       }
@@ -95,8 +88,6 @@ export default function WatchPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-          }),
         }
       );
 
@@ -105,14 +96,6 @@ export default function WatchPage() {
       if (data.success) {
         setStreamUrl(`http://localhost:8000${data.streamUrl}`);
         setIsWatching(true);
-
-        // REMOVE this setTimeout block. HLS.js will handle loading
-        // setTimeout(() => {
-        //   if (videoRef.current) {
-        //     videoRef.current.src = `http://localhost:8000${data.streamUrl}`;
-        //     videoRef.current.load();
-        //   }
-        // }, 5000);
       } else {
         setError(data.error || "Failed to start stream");
       }
@@ -126,7 +109,7 @@ export default function WatchPage() {
 
   const stopWatching = async () => {
     try {
-      await fetch(`http://localhost:8000/api/hls/stop/${roomId}`, {
+      await fetch(`http://localhost:8000/api/hls/stop/${selectedRoomId}`, {
         method: "DELETE",
       });
 
@@ -137,7 +120,7 @@ export default function WatchPage() {
 
       setIsWatching(false);
       setStreamUrl("");
-      setRoomProducers([]);
+      setSelectedRoomId("");
     } catch (error) {
       console.error("Error stopping stream:", error);
     }
@@ -170,10 +153,7 @@ export default function WatchPage() {
           if (data.fatal) {
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                // try to recover network error
-                console.error(
-                  "fatal network error encountered, try to recover"
-                );
+                console.error("fatal network error encountered, try to recover");
                 hls.startLoad();
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
@@ -181,7 +161,6 @@ export default function WatchPage() {
                 hls.recoverMediaError();
                 break;
               default:
-                // cannot recover
                 hls.destroy();
                 break;
             }
@@ -190,7 +169,6 @@ export default function WatchPage() {
       } else if (
         videoRef.current.canPlayType("application/vnd.apple.mpegurl")
       ) {
-        // Native HLS support (Safari)
         videoRef.current.src = streamUrl;
         videoRef.current.load();
         videoRef.current.play();
@@ -200,28 +178,49 @@ export default function WatchPage() {
     }
   }, [streamUrl]);
 
+  const getStreamInfo = (room: Room) => {
+    const videoProducers = room.producers.filter(p => p.kind === "video").length;
+    const audioProducers = room.producers.filter(p => p.kind === "audio").length;
+    const hasStreams = videoProducers > 0 && audioProducers > 0;
+    
+    return { videoProducers, audioProducers, hasStreams };
+  };
+
+  const activeRooms = rooms.filter(room => room.participants > 0);
+
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
-      <div className="max-w-4xl mx-auto">
+    <div className="min-h-[calc(100vh-80px)] p-4">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Watch Live Streams</h1>
+            <p className="text-gray-600 mt-1">Select an active room to watch the live stream</p>
+          </div>
+          <Button onClick={fetchRooms} variant="outline" size="sm">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Refresh
+          </Button>
+        </div>
+
+        {/* Manual Room Input */}
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              Watch Live Stream
-              {isWatching && <Badge variant="secondary">Live</Badge>}
-            </CardTitle>
+            <CardTitle className="text-lg">Enter Room ID</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2">
+          <CardContent>
+            <div className="flex gap-3">
               <Input
                 placeholder="Enter Room ID"
-                value={roomId}
-                onChange={(e) => setRoomId(e.target.value)}
+                value={selectedRoomId}
+                onChange={(e) => setSelectedRoomId(e.target.value)}
                 disabled={isWatching || loading}
+                className="flex-1"
               />
               {!isWatching ? (
                 <Button
-                  onClick={startHLSStream}
-                  disabled={!roomId.trim() || loading}
+                  onClick={() => startHLSStream(selectedRoomId)}
+                  disabled={!selectedRoomId.trim() || loading}
                   className="min-w-[120px]"
                 >
                   {loading ? (
@@ -243,23 +242,111 @@ export default function WatchPage() {
                 </Button>
               )}
             </div>
-
-            {error && (
-              <div className="text-red-600 text-sm bg-red-50 p-3 rounded">
-                {error}
-              </div>
-            )}
-
-            {roomProducers.length > 0 && (
-              <div className="text-sm text-gray-600">
-                Active streams: {roomProducers.map((p) => p.kind).join(", ")}
-              </div>
-            )}
           </CardContent>
         </Card>
 
+        {/* Active Rooms Grid */}
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold mb-4">Active Rooms ({activeRooms.length})</h2>
+          
+          {roomsLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-gray-500" />
+              <span className="ml-2 text-gray-500">Loading rooms...</span>
+            </div>
+          ) : activeRooms.length === 0 ? (
+            <Card>
+              <CardContent className="text-center py-12">
+                <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No Active Rooms</h3>
+                <p className="text-gray-500">No rooms with active participants found. Create a room to get started.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {activeRooms.map((room) => {
+                const { videoProducers, audioProducers, hasStreams } = getStreamInfo(room);
+                const isCurrentRoom = selectedRoomId === room.id && isWatching;
+                
+                return (
+                  <Card 
+                    key={room.id} 
+                    className={`cursor-pointer transition-all hover:shadow-lg border-2 ${
+                      isCurrentRoom ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                    onClick={() => !isWatching && hasStreams && startHLSStream(room.id)}
+                  >
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-lg font-medium">Room {room.id}</CardTitle>
+                        {isCurrentRoom && <Badge variant="default">Watching</Badge>}
+                        {!hasStreams && <Badge variant="secondary">No Streams</Badge>}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        <div className="flex items-center text-sm text-gray-600">
+                          <Users className="w-4 h-4 mr-2" />
+                          <span>{room.participants} participant{room.participants !== 1 ? 's' : ''}</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-4 text-sm">
+                          <div className="flex items-center text-gray-600">
+                            <Video className="w-4 h-4 mr-1" />
+                            <span>{videoProducers} video</span>
+                          </div>
+                          <div className="flex items-center text-gray-600">
+                            <Mic className="w-4 h-4 mr-1" />
+                            <span>{audioProducers} audio</span>
+                          </div>
+                        </div>
+
+                        <Button 
+                          className="w-full mt-3" 
+                          disabled={!hasStreams || isWatching || loading}
+                          variant={hasStreams ? "default" : "secondary"}
+                        >
+                          {isCurrentRoom ? (
+                            <>
+                              <Square className="w-4 h-4 mr-2" />
+                              Currently Watching
+                            </>
+                          ) : hasStreams ? (
+                            <>
+                              <Play className="w-4 h-4 mr-2" />
+                              Watch Stream
+                            </>
+                          ) : (
+                            "No Streams Available"
+                          )}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Error Display */}
+        {error && (
+          <Card className="mb-6 border-red-200 bg-red-50">
+            <CardContent className="py-4">
+              <div className="text-red-600 text-sm">{error}</div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Video Player */}
         {isWatching && (
           <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                Live Stream - Room {selectedRoomId}
+                <Badge variant="destructive">LIVE</Badge>
+              </CardTitle>
+            </CardHeader>
             <CardContent className="p-6">
               <div className="aspect-video bg-black rounded-lg overflow-hidden">
                 <video

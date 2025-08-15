@@ -7,8 +7,8 @@ interface Room {
   producers: Map<string, { producerId: string; kind: string; peerId: string ,appData : any}>;
 }
 
-const rooms = new Map<string, Room>();
-const peers = new Map<string, { roomId: string; socket: Socket }>();
+const rooms = new Map<string, Room>(); // create an in memory map for the rooms
+const peers = new Map<string, { roomId: string; socket: Socket }>(); // inside each room we have peers, this is also stored in the map
 
 export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: MediasoupManager) => {
   io.on("connection", (socket) => {
@@ -29,7 +29,8 @@ export const registerSocketHandlers = (io: SocketIOServer, mediasoupManager: Med
         const room = rooms.get(roomId)!;
         room.peers.add(socket.id);
         peers.set(socket.id, { roomId, socket });
-
+        
+        console.log(`Peers in the room ${socket.id}`,room.peers);
         socket.to(roomId).emit("peer-joined", { peerId: socket.id });
 
         const existingPeers = Array.from(room.peers).filter((id) => id !== socket.id);
